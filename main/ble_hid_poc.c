@@ -27,6 +27,7 @@
 #include "esp_hid_common.h"
 #include "esp_hidd.h"
 #include "esp_http_server.h"
+#include "esp_hid_gap.h"
 
 static const char *TAG = "BLE_HID_POC";
 
@@ -853,6 +854,16 @@ void app_main(void)
     ret = esp_hidd_dev_battery_set(s_hid_dev, HID_BATTERY_LEVEL);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "esp_hidd_dev_battery_set failed: %s", esp_err_to_name(ret));
+    }
+
+    // Start BLE advertising
+    ESP_LOGI(TAG, "Starting BLE advertising...");
+    esp_hid_ble_gap_adv_init(ESP_HID_APPEARANCE_KEYBOARD, ble_hid_config.device_name);
+    ret = esp_hid_ble_gap_adv_start();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "esp_hid_ble_gap_adv_start failed: %s", esp_err_to_name(ret));
+    } else {
+        ESP_LOGI(TAG, "BLE advertising started");
     }
 
     ESP_LOGI(TAG, "Starting interactive test task...");
