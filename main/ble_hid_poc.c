@@ -583,6 +583,25 @@ static esp_err_t mouse_release_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+// HTTP POST /consumer - consumer control (media keys)
+static esp_err_t consumer_handler(httpd_req_t *req)
+{
+    char buf[64];
+    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (ret <= 0) return httpd_resp_send_500(req);
+    buf[ret] = '\0';
+
+    int usage = 0;
+    sscanf(buf, "{\"usage\":%d}", &usage);
+    if (usage) {
+        send_consumer_report(usage);
+        vTaskDelay(100 / portTICK_PERIOD_MS);
+        send_consumer_report(0);
+    }
+    httpd_resp_send(req, "{\"ok\":true}", -1);
+    return ESP_OK;
+}
+
 // HTTP POST /queue/add - add command to queue
 static esp_err_t queue_add_handler(httpd_req_t *req)
 {
@@ -659,6 +678,9 @@ static void http_server_start(void)
 
     httpd_uri_t queue_exec_uri = { .uri = "/queue/exec", .method = HTTP_POST, .handler = queue_exec_handler };
     httpd_register_uri_handler(server, &queue_exec_uri);
+
+    httpd_uri_t consumer_uri = { .uri = "/consumer", .method = HTTP_POST, .handler = consumer_handler };
+    httpd_register_uri_handler(server, &consumer_uri);
 
     ESP_LOGI(TAG, "HTTP server started on port %d", config.server_port);
 }

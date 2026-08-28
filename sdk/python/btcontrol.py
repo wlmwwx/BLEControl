@@ -136,6 +136,107 @@ class BTControl:
     def middle_click(self):
         return self.click(4)
 
+    # Consumer control (media keys)
+    def volume_up(self):
+        """Volume up"""
+        r = requests.post(f"{self.base_url}/consumer", json={"usage": 0xE9}, timeout=self.timeout)
+        r.raise_for_status()
+        return r.json()
+
+    def volume_down(self):
+        """Volume down"""
+        r = requests.post(f"{self.base_url}/consumer", json={"usage": 0xEA}, timeout=self.timeout)
+        r.raise_for_status()
+        return r.json()
+
+    def mute(self):
+        """Mute"""
+        r = requests.post(f"{self.base_url}/consumer", json={"usage": 0xE2}, timeout=self.timeout)
+        r.raise_for_status()
+        return r.json()
+
+    def play(self):
+        """Play"""
+        r = requests.post(f"{self.base_url}/consumer", json={"usage": 0xB0}, timeout=self.timeout)
+        r.raise_for_status()
+        return r.json()
+
+    def pause(self):
+        """Pause"""
+        r = requests.post(f"{self.base_url}/consumer", json={"usage": 0xB1}, timeout=self.timeout)
+        r.raise_for_status()
+        return r.json()
+
+    def stop(self):
+        """Stop"""
+        r = requests.post(f"{self.base_url}/consumer", json={"usage": 0xB7}, timeout=self.timeout)
+        r.raise_for_status()
+        return r.json()
+
+    def next_track(self):
+        """Next track"""
+        r = requests.post(f"{self.base_url}/consumer", json={"usage": 0xB5}, timeout=self.timeout)
+        r.raise_for_status()
+        return r.json()
+
+    def prev_track(self):
+        """Previous track"""
+        r = requests.post(f"{self.base_url}/consumer", json={"usage": 0xB6}, timeout=self.timeout)
+        r.raise_for_status()
+        return r.json()
+
+    # Automation helpers
+    def tap(self, x=0, y=0):
+        """Tap at current position (for accessibility navigation)"""
+        self.left_click()
+        return True
+
+    def swipe(self, dx, dy, steps=5):
+        """Swipe by dragging"""
+        self.press_mouse(1)
+        time.sleep(0.05)
+        for i in range(steps):
+            self.move(dx // steps, dy // steps)
+            time.sleep(0.05)
+        self.release_mouse()
+        return True
+
+    def move_to(self, dx, dy):
+        """Move mouse to relative position"""
+        return self.move(dx, dy)
+
+    # Sequence helpers
+    def type_line(self, text):
+        """Type text followed by Enter"""
+        self.type(text)
+        time.sleep(0.1)
+        self.key("ENTER")
+        return True
+
+    def select_all(self):
+        """Ctrl+A"""
+        return self.key("CTRL", "A")
+
+    def copy(self):
+        """Ctrl+C"""
+        return self.key("CTRL", "C")
+
+    def paste(self):
+        """Ctrl+V"""
+        return self.key("CTRL", "V")
+
+    def cut(self):
+        """Ctrl+X"""
+        return self.key("CTRL", "X")
+
+    def undo(self):
+        """Ctrl+Z"""
+        return self.key("CTRL", "Z")
+
+    def save(self):
+        """Ctrl+S"""
+        return self.key("CTRL", "S")
+
 
 if __name__ == "__main__":
     # Demo
