@@ -602,6 +602,19 @@ static esp_err_t consumer_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+// HTTP GET /info - device info
+static esp_err_t info_handler(httpd_req_t *req)
+{
+    char buf[512];
+    snprintf(buf, sizeof(buf),
+             "{\"device\":\"%s\",\"free_heap\":%lu}",
+             ble_hid_config.device_name,
+             (unsigned long)esp_get_free_heap_size());
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, buf, strlen(buf));
+    return ESP_OK;
+}
+
 // HTTP POST /queue/add - add command to queue
 static esp_err_t queue_add_handler(httpd_req_t *req)
 {
@@ -681,6 +694,9 @@ static void http_server_start(void)
 
     httpd_uri_t consumer_uri = { .uri = "/consumer", .method = HTTP_POST, .handler = consumer_handler };
     httpd_register_uri_handler(server, &consumer_uri);
+
+    httpd_uri_t info_uri = { .uri = "/info", .method = HTTP_GET, .handler = info_handler };
+    httpd_register_uri_handler(server, &info_uri);
 
     ESP_LOGI(TAG, "HTTP server started on port %d", config.server_port);
 }
