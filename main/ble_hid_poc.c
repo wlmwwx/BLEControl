@@ -1,20 +1,24 @@
 /*
- * Phase 0: BLE HID 技术可行性验证固件
+ * Phase 1: ESP32-C3 BLE Keyboard + WiFi HTTP API
  *
  * 支持: Keyboard, Mouse, Consumer Control
- * 用于验证 ESP32-C3 BLE HID 功能
+ * WiFi + HTTP API 服务器
  */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
+#include <ctype.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_system.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
+#include "esp_wifi.h"
+#include "esp_event.h"
+#include "esp_netif.h"
 
 #include "esp_bt.h"
 #if CONFIG_BT_NIMBLE_ENABLED
@@ -22,6 +26,7 @@
 #endif
 #include "esp_hid_common.h"
 #include "esp_hidd.h"
+#include "esp_http_server.h"
 
 static const char *TAG = "BLE_HID_POC";
 
@@ -242,6 +247,223 @@ static uint8_t ascii_to_keycode(unsigned char c)
     return usb_keycode_map[c];
 }
 
+// WiFi configuration
+#define WIFI_SSID     "BTControl"
+#define WIFI_PASS     "12345678"
+#define MAX_CONNECTIONS 3
+
+// WiFi event handler
+static void wifi_event_handler(void* arg, esp_event_base_t event_base,
+                               int32_t event_id, void* event_data)
+{
+    if (event_id == WIFI_EVENT_AP_STACONNECTED) {
+        ESP_LOGI(TAG, "WiFi station connected");
+    } else if (event_id == WIFI_EVENT_AP_STADISCONNECTED) {
+        ESP_LOGI(TAG, "WiFi station disconnected");
+    }
+}
+
+// Initialize WiFi AP
+static void wifi_init(void)
+{
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    esp_netif_create_default_wifi_ap();
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
+
+    wifi_config_t wifi_config = {
+        .ap = {
+            .ssid = WIFI_SSID,
+            .ssid_len = strlen(WIFI_SSID),
+            .password = WIFI_PASS,
+            .max_connection = MAX_CONNECTIONS,
+            .authmode = WIFI_AUTH_WPA_WPA2_PSK
+        },
+    };
+
+    if (strlen(WIFI_PASS) == 0) {
+        wifi_config.ap.authmode = WIFI_AUTH_OPEN;
+    }
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
+
+    ESP_LOGI(TAG, "WiFi AP started. SSID: %s, Password: %s", WIFI_SSID, WIFI_PASS);
+}
+
+// HTTP GET /status - returns connection status
+static esp_err_t status_handler(httpd_req_t *req)
+{
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+             "{\"connected\":%s,\"device_name\":\"%s\"}",
+             s_ble_connected ? "true" : "false",
+             ble_hid_config.device_name);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, buf, strlen(buf));
+    return ESP_OK;
+}
+
+// HTTP POST /keyboard/type - type a string
+static esp_err_t keyboard_type_handler(httpd_req_t *req)
+{
+    char buf[512];
+    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (ret <= 0) return httpd_resp_send_500(req);
+
+    buf[ret] = '\0';
+    ESP_LOGI(TAG, "keyboard/type: %s", buf);
+
+    // Parse JSON and extract "text" field
+    char *text_start = strstr(buf, "\"text\"");
+    if (text_start) {
+        text_start = strchr(text_start, ':');
+        if (text_start) {
+            text_start++;
+            while (*text_start && !isprint(*text_start)) text_start++;
+            if (*text_start == '"') text_start++;
+            char *text_end = text_start;
+            while (*text_end && *text_end != '"' && isprint(*text_end)) text_end++;
+            *text_end = '\0';
+            ESP_LOGI(TAG, "Typing: '%s'", text_start);
+
+            // Send each character
+            while (*text_start) {
+                char c = *text_start++;
+                uint8_t modifiers = 0;
+                uint8_t keycode = ascii_to_keycode(c);
+                if (c >= 'A' && c <= 'Z') modifiers = USB_HID_MODIFIER_LEFT_SHIFT;
+                else if (c >= 'a' && c <= 'z') keycode = ascii_to_keycode(c - 'a' + 'A');
+                if (keycode) {
+                    send_keyboard_report(modifiers, keycode, 0, 0);
+                    vTaskDelay(50 / portTICK_PERIOD_MS);
+                    send_keyboard_release();
+                    vTaskDelay(30 / portTICK_PERIOD_MS);
+                }
+            }
+            httpd_resp_send(req, "{\"ok\":true}", -1);
+            return ESP_OK;
+        }
+    }
+    return httpd_resp_send_500(req);
+}
+
+// HTTP POST /keyboard/key - send a key combination
+static esp_err_t keyboard_key_handler(httpd_req_t *req)
+{
+    char buf[256];
+    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (ret <= 0) return httpd_resp_send_500(req);
+
+    buf[ret] = '\0';
+    ESP_LOGI(TAG, "keyboard/key: %s", buf);
+
+    // Expected format: {"keys":["CTRL","C"]}
+    char *keys_start = strstr(buf, "\"keys\"");
+    if (keys_start) {
+        uint8_t modifiers = 0;
+        uint8_t keycode = 0;
+
+        // Simple parsing for modifier keys
+        if (strstr(buf, "\"CTRL\"")) modifiers |= USB_HID_MODIFIER_LEFT_CTRL;
+        if (strstr(buf, "\"SHIFT\"")) modifiers |= USB_HID_MODIFIER_LEFT_SHIFT;
+        if (strstr(buf, "\"ALT\"")) modifiers |= USB_HID_MODIFIER_LEFT_ALT;
+        if (strstr(buf, "\"GUI\"")) modifiers |= USB_HID_MODIFIER_LEFT_GUI;
+
+        // Find the key code
+        char *keycodes[] = {"A","B","C","D","E","F","G","H","I","J","K","L","M",
+                           "N","O","P","Q","R","S","T","U","V","W","X","Y","Z",
+                           "ENTER","ESCAPE","BACKSPACE","TAB","SPACE","UP","DOWN","LEFT","RIGHT"};
+        uint8_t codes[] = {0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D,
+                          0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+                          0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x28, 0x29, 0x2A, 0x2B, 0x2C,
+                          0x52, 0x51, 0x50, 0x4F};
+        for (int i = 0; i < sizeof(keycodes)/sizeof(keycodes[0]); i++) {
+            char search[8];
+            snprintf(search, sizeof(search), "\"%s\"", keycodes[i]);
+            if (strstr(buf, search)) {
+                keycode = codes[i];
+                break;
+            }
+        }
+
+        if (keycode) {
+            send_keyboard_report(modifiers, keycode, 0, 0);
+            vTaskDelay(50 / portTICK_PERIOD_MS);
+            send_keyboard_release();
+            httpd_resp_send(req, "{\"ok\":true}", -1);
+            return ESP_OK;
+        }
+    }
+    return httpd_resp_send_500(req);
+}
+
+// HTTP POST /mouse/move - move mouse
+static esp_err_t mouse_move_handler(httpd_req_t *req)
+{
+    char buf[128];
+    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (ret <= 0) return httpd_resp_send_500(req);
+    buf[ret] = '\0';
+
+    int dx = 0, dy = 0;
+    sscanf(buf, "{\"dx\":%d,\"dy\":%d}", &dx, &dy);
+    send_mouse_report(0, dx, dy, 0);
+    httpd_resp_send(req, "{\"ok\":true}", -1);
+    return ESP_OK;
+}
+
+// HTTP POST /mouse/click - mouse click
+static esp_err_t mouse_click_handler(httpd_req_t *req)
+{
+    char buf[64];
+    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (ret <= 0) return httpd_resp_send_500(req);
+    buf[ret] = '\0';
+
+    int button = 1; // default left click
+    char *btn_str = strstr(buf, "\"button\"");
+    if (btn_str) sscanf(btn_str, "\"button\":%d", &button);
+
+    send_mouse_report(button, 0, 0, 0);
+    vTaskDelay(50 / portTICK_PERIOD_MS);
+    send_mouse_report(0, 0, 0, 0);
+    httpd_resp_send(req, "{\"ok\":true}", -1);
+    return ESP_OK;
+}
+
+// Start HTTP server
+static void http_server_start(void)
+{
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+
+    httpd_handle_t server = NULL;
+    ESP_ERROR_CHECK(httpd_start(&server, &config));
+
+    // Register handlers
+    httpd_uri_t status_uri = { .uri = "/status", .method = HTTP_GET, .handler = status_handler };
+    httpd_register_uri_handler(server, &status_uri);
+
+    httpd_uri_t type_uri = { .uri = "/keyboard/type", .method = HTTP_POST, .handler = keyboard_type_handler };
+    httpd_register_uri_handler(server, &type_uri);
+
+    httpd_uri_t key_uri = { .uri = "/keyboard/key", .method = HTTP_POST, .handler = keyboard_key_handler };
+    httpd_register_uri_handler(server, &key_uri);
+
+    httpd_uri_t move_uri = { .uri = "/mouse/move", .method = HTTP_POST, .handler = mouse_move_handler };
+    httpd_register_uri_handler(server, &move_uri);
+
+    httpd_uri_t click_uri = { .uri = "/mouse/click", .method = HTTP_POST, .handler = mouse_click_handler };
+    httpd_register_uri_handler(server, &click_uri);
+
+    ESP_LOGI(TAG, "HTTP server started on port %d", config.server_port);
+}
+
 // Interactive test task via UART
 void interactive_test_task(void *pvParameters)
 {
@@ -367,6 +589,14 @@ void app_main(void)
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
+
+    // Initialize WiFi AP
+    ESP_LOGI(TAG, "Initializing WiFi AP...");
+    wifi_init();
+
+    // Start HTTP server
+    ESP_LOGI(TAG, "Starting HTTP server...");
+    http_server_start();
 
 #if CONFIG_BT_NIMBLE_ENABLED
     ESP_LOGI(TAG, "Initializing NimBLE...");
