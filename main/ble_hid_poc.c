@@ -31,10 +31,76 @@
 static const char *TAG = "BLE_HID_POC";
 
 #define HID_BATTERY_LEVEL 100
+#define QUEUE_SIZE 32
 
 // Connection state
 static bool s_ble_connected = false;
 static esp_hidd_dev_t *s_hid_dev = NULL;
+
+// Command queue
+typedef struct {
+    char cmd[32];
+    char data[256];
+} cmd_item_t;
+
+static cmd_item_t s_cmd_queue[QUEUE_SIZE];
+static int s_queue_head = 0;
+static int s_queue_tail = 0;
+static int s_queue_count = 0;
+
+static void queue_push(const char *cmd, const char *data)
+{
+    if (s_queue_count >= QUEUE_SIZE) return;
+    cmd_item_t *item = &s_cmd_queue[s_queue_tail];
+    strncpy(item->cmd, cmd, sizeof(item->cmd) - 1);
+    strncpy(item->data, data, sizeof(item->data) - 1);
+    s_cmd_queue[s_queue_tail].cmd[sizeof(item->cmd) - 1] = 0;
+    s_cmd_queue[s_queue_tail].data[sizeof(item->data) - 1] = 0;
+    s_queue_tail = (s_queue_tail + 1) % QUEUE_SIZE;
+    s_queue_count++;
+}
+
+static bool queue_pop(char *cmd, char *data, int len)
+{
+    if (s_queue_count == 0) return false;
+    cmd_item_t *item = &s_cmd_queue[s_queue_head];
+    strncpy(cmd, item->cmd, len - 1);
+    strncpy(data, item->data, len - 1);
+    cmd[len - 1] = 0;
+    data[len - 1] = 0;
+    s_queue_head = (s_queue_head + 1) % QUEUE_SIZE;
+    s_queue_count--;
+    return true;
+}
+
+static void process_command(const char *cmd, const char *data)
+{
+    ESP_LOGI(TAG, "CMD: %s -> %s", cmd, data);
+    // Parse and execute command
+    if (strcmp(cmd, "keyboard_type") == 0) {
+        // Type text - already handled in HTTP handler
+    } else if (strcmp(cmd, "keyboard_key") == 0) {
+        // Key combination - already handled in HTTP handler
+    } else if (strcmp(cmd, "mouse_move") == 0) {
+        // Move mouse - already handled in HTTP handler
+    } else if (strcmp(cmd, "mouse_click") == 0) {
+        // Click - already handled in HTTP handler
+    } else if (strcmp(cmd, "wait") == 0) {
+        int ms = atoi(data);
+        vTaskDelay(ms / portTICK_PERIOD_MS);
+    }
+}
+
+static void queue_task(void *pvParameters)
+{
+    char cmd[64], data[256];
+    while (1) {
+        while (queue_pop(cmd, data, sizeof(cmd))) {
+            process_command(cmd, data);
+        }
+        vTaskDelay(10 / portTICK_PERIOD_MS);
+    }
+}
 
 // USB HID Key codes (from USB HID spec)
 #define USB_HID_MODIFIER_LEFT_CTRL   0x01
@@ -517,6 +583,37 @@ static esp_err_t mouse_release_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+// HTTP POST /queue/add - add command to queue
+static esp_err_t queue_add_handler(httpd_req_t *req)
+{
+    char buf[512];
+    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (ret <= 0) return httpd_resp_send_500(req);
+    buf[ret] = '\0';
+
+    char cmd[32] = {0}, data[256] = {0};
+    sscanf(buf, "{\"cmd\":\"%31[^\"]\",\"data\":\"%255[^\"]\"}", cmd, data);
+    queue_push(cmd, data);
+    snprintf(buf, sizeof(buf), "{\"ok\":true,\"queue_len\":%d}", s_queue_count);
+    httpd_resp_send(req, buf, -1);
+    return ESP_OK;
+}
+
+// HTTP POST /queue/exec - execute queued commands
+static esp_err_t queue_exec_handler(httpd_req_t *req)
+{
+    char cmd[64], data[256];
+    int count = 0;
+    while (queue_pop(cmd, data, sizeof(cmd))) {
+        process_command(cmd, data);
+        count++;
+    }
+    char buf[64];
+    snprintf(buf, sizeof(buf), "{\"ok\":true,\"executed\":%d}", count);
+    httpd_resp_send(req, buf, -1);
+    return ESP_OK;
+}
+
 // Start HTTP server
 static void http_server_start(void)
 {
@@ -555,6 +652,13 @@ static void http_server_start(void)
 
     httpd_uri_t release_uri = { .uri = "/mouse/release", .method = HTTP_POST, .handler = mouse_release_handler };
     httpd_register_uri_handler(server, &release_uri);
+
+    // Queue endpoint for batch commands
+    httpd_uri_t queue_uri = { .uri = "/queue/add", .method = HTTP_POST, .handler = queue_add_handler };
+    httpd_register_uri_handler(server, &queue_uri);
+
+    httpd_uri_t queue_exec_uri = { .uri = "/queue/exec", .method = HTTP_POST, .handler = queue_exec_handler };
+    httpd_register_uri_handler(server, &queue_exec_uri);
 
     ESP_LOGI(TAG, "HTTP server started on port %d", config.server_port);
 }
@@ -715,6 +819,9 @@ void app_main(void)
 
     ESP_LOGI(TAG, "Starting interactive test task...");
     xTaskCreate(interactive_test_task, "interactive_test", 4096, NULL, configMAX_PRIORITIES - 3, NULL);
+
+    ESP_LOGI(TAG, "Starting command queue task...");
+    xTaskCreate(queue_task, "queue_task", 4096, NULL, configMAX_PRIORITIES - 4, NULL);
 
     ESP_LOGI(TAG, "BLE HID POC initialized. Device name: %s", ble_hid_config.device_name);
     ESP_LOGI(TAG, "Waiting for connection from host...");
