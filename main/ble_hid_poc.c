@@ -437,6 +437,86 @@ static esp_err_t mouse_click_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+// HTTP POST /mouse/scroll - mouse scroll
+static esp_err_t mouse_scroll_handler(httpd_req_t *req)
+{
+    char buf[64];
+    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (ret <= 0) return httpd_resp_send_500(req);
+    buf[ret] = '\0';
+
+    int wheel = 0;
+    sscanf(buf, "{\"scroll\":%d}", &wheel);
+    send_mouse_report(0, 0, 0, (int8_t)wheel);
+    httpd_resp_send(req, "{\"ok\":true}", -1);
+    return ESP_OK;
+}
+
+// HTTP POST /mouse/drag - mouse drag (move + button down)
+static esp_err_t mouse_drag_handler(httpd_req_t *req)
+{
+    char buf[128];
+    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (ret <= 0) return httpd_resp_send_500(req);
+    buf[ret] = '\0';
+
+    int dx = 0, dy = 0;
+    sscanf(buf, "{\"dx\":%d,\"dy\":%d}", &dx, &dy);
+
+    // Mouse down (left button)
+    send_mouse_report(1, 0, 0, 0);
+    vTaskDelay(50 / portTICK_PERIOD_MS);
+
+    // Move while dragging
+    send_mouse_report(1, dx, dy, 0);
+    vTaskDelay(50 / portTICK_PERIOD_MS);
+
+    // Mouse up
+    send_mouse_report(0, 0, 0, 0);
+    httpd_resp_send(req, "{\"ok\":true}", -1);
+    return ESP_OK;
+}
+
+// HTTP POST /mouse/double_click - double click
+static esp_err_t mouse_doubleclick_handler(httpd_req_t *req)
+{
+    // Left click twice quickly
+    send_mouse_report(1, 0, 0, 0);
+    vTaskDelay(50 / portTICK_PERIOD_MS);
+    send_mouse_report(0, 0, 0, 0);
+    vTaskDelay(30 / portTICK_PERIOD_MS);
+    send_mouse_report(1, 0, 0, 0);
+    vTaskDelay(50 / portTICK_PERIOD_MS);
+    send_mouse_report(0, 0, 0, 0);
+    httpd_resp_send(req, "{\"ok\":true}", -1);
+    return ESP_OK;
+}
+
+// HTTP POST /mouse/press - press and hold mouse button
+static esp_err_t mouse_press_handler(httpd_req_t *req)
+{
+    char buf[64];
+    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (ret <= 0) return httpd_resp_send_500(req);
+    buf[ret] = '\0';
+
+    int button = 1;
+    char *btn_str = strstr(buf, "\"button\"");
+    if (btn_str) sscanf(btn_str, "\"button\":%d", &button);
+
+    send_mouse_report(button, 0, 0, 0);
+    httpd_resp_send(req, "{\"ok\":true}", -1);
+    return ESP_OK;
+}
+
+// HTTP POST /mouse/release - release mouse button
+static esp_err_t mouse_release_handler(httpd_req_t *req)
+{
+    send_mouse_report(0, 0, 0, 0);
+    httpd_resp_send(req, "{\"ok\":true}", -1);
+    return ESP_OK;
+}
+
 // Start HTTP server
 static void http_server_start(void)
 {
@@ -460,6 +540,21 @@ static void http_server_start(void)
 
     httpd_uri_t click_uri = { .uri = "/mouse/click", .method = HTTP_POST, .handler = mouse_click_handler };
     httpd_register_uri_handler(server, &click_uri);
+
+    httpd_uri_t scroll_uri = { .uri = "/mouse/scroll", .method = HTTP_POST, .handler = mouse_scroll_handler };
+    httpd_register_uri_handler(server, &scroll_uri);
+
+    httpd_uri_t drag_uri = { .uri = "/mouse/drag", .method = HTTP_POST, .handler = mouse_drag_handler };
+    httpd_register_uri_handler(server, &drag_uri);
+
+    httpd_uri_t dblclick_uri = { .uri = "/mouse/double_click", .method = HTTP_POST, .handler = mouse_doubleclick_handler };
+    httpd_register_uri_handler(server, &dblclick_uri);
+
+    httpd_uri_t press_uri = { .uri = "/mouse/press", .method = HTTP_POST, .handler = mouse_press_handler };
+    httpd_register_uri_handler(server, &press_uri);
+
+    httpd_uri_t release_uri = { .uri = "/mouse/release", .method = HTTP_POST, .handler = mouse_release_handler };
+    httpd_register_uri_handler(server, &release_uri);
 
     ESP_LOGI(TAG, "HTTP server started on port %d", config.server_port);
 }
