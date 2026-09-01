@@ -90,6 +90,9 @@ nimble_hid_gap_event(struct ble_gap_event *event, void *arg)
         return 0;
     case BLE_GAP_EVENT_DISCONNECT:
         ESP_LOGI(TAG, "disconnect; reason=%d", event->disconnect.reason);
+        /* Always be discoverable again so the phone can reconnect/re-pair
+         * without rebooting the board. */
+        esp_hid_ble_gap_adv_start();
         return 0;
     case BLE_GAP_EVENT_CONN_UPDATE:
         ESP_LOGI(TAG, "connection updated; status=%d",
@@ -155,7 +158,11 @@ esp_err_t esp_hid_ble_gap_adv_start(void)
 {
     int rc;
     struct ble_gap_adv_params adv_params;
-    int32_t adv_duration_ms = 180000;
+    /* BLE_HS_FOREVER = advertise until a connection is made. A finite
+     * duration (or 0, which NimBLE treats as "immediate timeout") made the
+     * device undiscoverable after a few minutes, so re-pairing later was
+     * impossible without rebooting. */
+    int32_t adv_duration_ms = BLE_HS_FOREVER;
 
     rc = ble_gap_adv_set_fields(&fields);
     if (rc != 0) {
