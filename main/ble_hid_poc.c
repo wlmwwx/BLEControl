@@ -332,27 +332,47 @@ void send_consumer_report(uint8_t usage)
 }
 
 // USB HID Keycode lookup for ASCII characters
+// USB HID keycode lookup for ASCII characters (USB HID usage IDs).
+// Uppercase letters and shifted punctuation share the base key's code;
+// the Shift modifier is added by ascii_needs_shift() at the call site.
 static const uint8_t usb_keycode_map[128] = {
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x2A, 0, 0, 0, 0, 0,     // 0x00-0x0F
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,         // 0x10-0x1F
-    0x2C, 0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23, 0x24,         // 0x20-0x27: space, !
-    0x25, 0x26, 0x27, 0x2D, 0x2E, 0x2F, 0x30, 0x31,         // 0x28-0x2F: " # $ % & '
-    0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39,         // 0x30-0x37: ( ) * + , -
-    0x3A, 0x3B, 0x3C, 0x3D, 0x3E, 0x3F, 0x40, 0x5B,         // 0x38-0x3F: / 0-7 =
-    0x5C, 0x5D, 0x2E, 0x1C, 0x1D, 0x1A, 0x1B, 0x22,         // 0x40-0x47: @ A-D
-    0x23, 0x24, 0x25, 0x26, 0x33, 0x34, 0x35, 0x36,         // 0x48-0x4F: E-L
-    0x37, 0x38, 0x27, 0x0E, 0x0F, 0x13, 0x10, 0x11,         // 0x50-0x57: M-T
-    0x12, 0x2D, 0x31, 0x2E, 0x11, 0x00, 0x00, 0x00,         /* 0x58-0x5F: U-Z [ */
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,         // 0x60-0x67: `
-    0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25,         // 0x68-0x6F: a-h
-    0x26, 0x27, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32,         // 0x70-0x77: i-p
-    0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x00,         // 0x78-0x7F: q-x
+    /* 0x00-0x1F: control characters, not typable */
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    /* 0x20-0x2F */
+    0x2C, 0x1E, 0x34, 0x20, 0x21, 0x22, 0x24, 0x34,  // space ! " # $ % & '
+    0x26, 0x27, 0x25, 0x2E, 0x36, 0x2D, 0x37, 0x38,  // ( ) * + , - . /
+    /* 0x30-0x39: 0-9 */
+    0x27, 0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26,
+    /* 0x3A-0x3F */
+    0x33, 0x33, 0x36, 0x2E, 0x37, 0x38, 0x1F,        // : ; < = > ? @
+    /* 0x40-0x5A: A-Z */
+    0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
+    0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13,
+    0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B,
+    0x1C, 0x1D,
+    /* 0x5B-0x5F */
+    0x2F, 0x31, 0x30, 0x23, 0x2D, 0x35,              // [ \ ] ^ _ `
+    /* 0x60-0x7A: a-z */
+    0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
+    0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13,
+    0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B,
+    0x1C, 0x1D,
+    /* 0x7B-0x7F */
+    0x2F, 0x31, 0x30, 0x35, 0,                       // { | } ~ DEL
 };
 
 static uint8_t ascii_to_keycode(unsigned char c)
 {
     if (c > 127) return 0;
     return usb_keycode_map[c];
+}
+
+// Does this ASCII char need the Shift modifier on a US keyboard layout?
+static bool ascii_needs_shift(unsigned char c)
+{
+    if (c >= 'A' && c <= 'Z') return true;
+    return c != '\0' && strchr("!@#$%^&*()_+{}|:\"<>?~", c) != NULL;
 }
 
 // WiFi is set up by wifi_prov.c: STA with saved credentials, or AP mode
@@ -397,10 +417,8 @@ static esp_err_t keyboard_type_handler(httpd_req_t *req)
             // Send each character
             while (*text_start) {
                 char c = *text_start++;
-                uint8_t modifiers = 0;
+                uint8_t modifiers = ascii_needs_shift(c) ? USB_HID_MODIFIER_LEFT_SHIFT : 0;
                 uint8_t keycode = ascii_to_keycode(c);
-                if (c >= 'A' && c <= 'Z') modifiers = USB_HID_MODIFIER_LEFT_SHIFT;
-                else if (c >= 'a' && c <= 'z') keycode = ascii_to_keycode(c - 'a' + 'A');
                 if (keycode) {
                     send_keyboard_report(modifiers, keycode, 0, 0);
                     vTaskDelay(50 / portTICK_PERIOD_MS);
@@ -732,9 +750,10 @@ void interactive_test_task(void *pvParameters)
 
         if (strncmp(line, "k ", 2) == 0) {
             char c = line[2];
+            uint8_t modifiers = ascii_needs_shift(c) ? USB_HID_MODIFIER_LEFT_SHIFT : 0;
             uint8_t keycode = ascii_to_keycode(c);
             if (keycode) {
-                send_keyboard_report(0, keycode, 0, 0);
+                send_keyboard_report(modifiers, keycode, 0, 0);
                 vTaskDelay(50 / portTICK_PERIOD_MS);
                 send_keyboard_release();
                 ESP_LOGI(TAG, "Sent key: '%c' (0x%02x)", c, keycode);
@@ -755,11 +774,8 @@ void interactive_test_task(void *pvParameters)
             ESP_LOGI(TAG, "Sending text: '%s'", text);
             while (*text) {
                 char c = *text++;
-                uint8_t modifiers = 0;
+                uint8_t modifiers = ascii_needs_shift(c) ? USB_HID_MODIFIER_LEFT_SHIFT : 0;
                 uint8_t keycode = ascii_to_keycode(c);
-                if (c >= 'A' && c <= 'Z') {
-                    modifiers = USB_HID_MODIFIER_LEFT_SHIFT;
-                }
                 if (keycode) {
                     send_keyboard_report(modifiers, keycode, 0, 0);
                     vTaskDelay(50 / portTICK_PERIOD_MS);
