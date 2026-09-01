@@ -7,6 +7,9 @@ CONFIG_BT_NIMBLE_HID_SERVICE=y
 # We register one HID service per report map (keyboard, mouse, consumer).
 # Default is 2, which makes the 3rd one fail with BLE_HS_ENOMEM.
 CONFIG_BT_NIMBLE_SVC_HID_MAX_INSTANCES=3
+# Persist BLE pairing keys in NVS so the phone doesn't need to re-pair
+# after every reboot (firmware calls ble_store_config_init()).
+CONFIG_BT_NIMBLE_NVS_PERSIST=y
 CONFIG_ESP_HTTP_SERVER_ENABLED=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"

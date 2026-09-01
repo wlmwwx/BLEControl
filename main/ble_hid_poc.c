@@ -24,6 +24,9 @@
 #if CONFIG_BT_NIMBLE_ENABLED
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
+#include "host/ble_hs.h"
+#include "host/ble_store.h"
+void ble_store_config_init(void);
 #endif
 #include "esp_hid_common.h"
 #include "esp_hidd.h"
@@ -873,6 +876,11 @@ void app_main(void)
         ESP_LOGE(TAG, "esp_nimble_init failed: %s", esp_err_to_name(ret));
         return;
     }
+
+    /* Persist pairing keys in NVS (CONFIG_BT_NIMBLE_NVS_PERSIST) so the
+     * phone does not have to re-pair after every reboot. */
+    ble_store_config_init();
+    ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
 
     ESP_LOGI(TAG, "Initializing BLE HID Device...");
     ret = esp_hidd_dev_init(&ble_hid_config, ESP_HID_TRANSPORT_BLE, ble_hidd_event_callback, &s_hid_dev);
