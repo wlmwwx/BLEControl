@@ -23,6 +23,7 @@
 #include "esp_bt.h"
 #if CONFIG_BT_NIMBLE_ENABLED
 #include "nimble/nimble_port.h"
+#include "nimble/nimble_port_freertos.h"
 #endif
 #include "esp_hid_common.h"
 #include "esp_hidd.h"
@@ -185,23 +186,27 @@ const unsigned char consumerReportMap[] = {
     0x09, 0x01,        // Usage (Consumer Control)
     0xA1, 0x01,        // Collection (Application)
     0x85, 0x03,        //   Report ID (3)
-    0x15, 0x01,        //   Logical Minimum (1)
-    0x25, 0x0C,        //   Logical Maximum (12)
-    0x75, 0x04,        //   Report Size (4)
-    0x95, 0x01,        //   Report Count (1)
-    0x09, 0xB0,        //   Usage (Play)
-    0x09, 0xB1,        //   Usage (Pause)
-    0x09, 0xB2,        //   Usage (Record)
-    0x09, 0xB3,        //   Usage (Fast Forward)
-    0x09, 0xB4,        //   Usage (Rewind)
-    0x09, 0xB5,        //   Usage (Scan Next Track)
-    0x09, 0xB6,        //   Usage (Scan Previous Track)
-    0x09, 0xB7,        //   Usage (Stop)
-    0x09, 0xE9,        //   Usage (Volume Up)
-    0x09, 0xEA,        //   Usage (Volume Down)
-    0x09, 0xE2,        //   Usage (Mute)
-    0x09, 0x30,        //   Usage (Power)
-    0x81, 0x00,        //   Input (Data,Array,Abs)
+    0x15, 0x00,        //   Logical Minimum (0)
+    0x25, 0x01,        //   Logical Maximum (1)
+    0x75, 0x01,        //   Report Size (1)
+    0x95, 0x10,        //   Report Count (16) - one bit per usage = 2 bytes
+    0x09, 0xB0,        //   Usage (Play)                  bit 0
+    0x09, 0xB1,        //   Usage (Pause)                 bit 1
+    0x09, 0xB2,        //   Usage (Record)                bit 2
+    0x09, 0xB3,        //   Usage (Fast Forward)          bit 3
+    0x09, 0xB4,        //   Usage (Rewind)                bit 4
+    0x09, 0xB5,        //   Usage (Scan Next Track)       bit 5
+    0x09, 0xB6,        //   Usage (Scan Previous Track)   bit 6
+    0x09, 0xB7,        //   Usage (Stop)                  bit 7
+    0x09, 0xB8,        //   Usage (Eject)                 bit 8
+    0x09, 0xB9,        //   Usage (Random Play)           bit 9
+    0x09, 0xCD,        //   Usage (Play/Pause)            bit 10
+    0x09, 0xE2,        //   Usage (Mute)                  bit 11
+    0x09, 0xE9,        //   Usage (Volume Increment)      bit 12
+    0x09, 0xEA,        //   Usage (Volume Decrement)      bit 13
+    0x09, 0x30,        //   Usage (Power)                 bit 14
+    0x09, 0x40,        //   Usage (Menu)                  bit 15
+    0x81, 0x02,        //   Input (Data,Var,Abs)
     0xC0,              // End Collection
 };
 
@@ -232,7 +237,8 @@ static void ble_hidd_event_callback(void *handler_args, esp_event_base_t base, i
 
     switch (event) {
     case ESP_HIDD_START_EVENT:
-        ESP_LOGI(TAG, "START");
+        ESP_LOGI(TAG, "START - Starting BLE advertising...");
+        esp_hid_ble_gap_adv_start();
         break;
     case ESP_HIDD_CONNECT_EVENT:
         ESP_LOGI(TAG, "CONNECT");
@@ -279,6 +285,34 @@ void send_mouse_report(uint8_t buttons, int8_t dx, int8_t dy, int8_t wheel)
     esp_hidd_dev_input_set(s_hid_dev, 0, 2, buffer, 4);
 }
 
+// Consumer page usage -> bit position, matching the order declared in
+// consumerReportMap. The report is a bitmap, not an array of usage codes.
+typedef struct {
+    uint8_t usage;
+    uint8_t bit;
+} consumer_key_t;
+
+static const consumer_key_t consumer_key_map[] = {
+    { 0xB0, 0 },  { 0xB1, 1 },  { 0xB2, 2 },  { 0xB3, 3 },
+    { 0xB4, 4 },  { 0xB5, 5 },  { 0xB6, 6 },  { 0xB7, 7 },
+    { 0xB8, 8 },  { 0xB9, 9 },  { 0xCD, 10 }, { 0xE2, 11 },
+    { 0xE9, 12 }, { 0xEA, 13 }, { 0x30, 14 }, { 0x40, 15 },
+};
+
+static uint16_t consumer_usage_to_bitmap(uint8_t usage)
+{
+    if (usage == 0) {
+        return 0;    // no key pressed - also used to release
+    }
+    for (size_t i = 0; i < sizeof(consumer_key_map) / sizeof(consumer_key_map[0]); i++) {
+        if (consumer_key_map[i].usage == usage) {
+            return (uint16_t)1 << consumer_key_map[i].bit;
+        }
+    }
+    ESP_LOGW(TAG, "Unsupported consumer usage: 0x%02X", usage);
+    return 0;
+}
+
 // Send Consumer Control Report
 void send_consumer_report(uint8_t usage)
 {
@@ -286,7 +320,8 @@ void send_consumer_report(uint8_t usage)
         ESP_LOGW(TAG, "BLE not connected");
         return;
     }
-    uint8_t buffer[2] = { usage, 0 };
+    uint16_t bitmap = consumer_usage_to_bitmap(usage);
+    uint8_t buffer[2] = { (uint8_t)(bitmap & 0xFF), (uint8_t)(bitmap >> 8) };
     esp_hidd_dev_input_set(s_hid_dev, 0, 3, buffer, 2);
 }
 
@@ -651,6 +686,7 @@ static esp_err_t queue_exec_handler(httpd_req_t *req)
 static void http_server_start(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.max_uri_handlers = 20;   // 14 endpoints are registered below; default is 8
 
     httpd_handle_t server = NULL;
     ESP_ERROR_CHECK(httpd_start(&server, &config));
@@ -816,6 +852,14 @@ void interactive_test_task(void *pvParameters)
     }
 }
 
+// NimBLE host task - runs the host event loop
+static void ble_hid_host_task(void *param)
+{
+    ESP_LOGI(TAG, "BLE Host Task Started");
+    nimble_port_run();
+    nimble_port_freertos_deinit();
+}
+
 void app_main(void)
 {
     esp_err_t ret;
@@ -837,6 +881,21 @@ void app_main(void)
     http_server_start();
 
 #if CONFIG_BT_NIMBLE_ENABLED
+    // BT controller must reach ENABLED state before esp_nimble_init():
+    // esp_vhci_host_register_callback() returns ESP_FAIL otherwise.
+    ESP_LOGI(TAG, "Initializing BT controller...");
+    esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
+    ret = esp_bt_controller_init(&bt_cfg);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "esp_bt_controller_init failed: %s", esp_err_to_name(ret));
+        return;
+    }
+    ret = esp_bt_controller_enable(ESP_BT_MODE_BLE);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "esp_bt_controller_enable failed: %s", esp_err_to_name(ret));
+        return;
+    }
+
     ESP_LOGI(TAG, "Initializing NimBLE...");
     ret = esp_nimble_init();
     if (ret != ESP_OK) {
@@ -847,7 +906,7 @@ void app_main(void)
     ESP_LOGI(TAG, "Initializing BLE HID Device...");
     ret = esp_hidd_dev_init(&ble_hid_config, ESP_HID_TRANSPORT_BLE, ble_hidd_event_callback, &s_hid_dev);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "esp_hidd_dev_init failed: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "esp_hidd_dev_init failed: %d (0x%X) %s", ret, (unsigned)ret, esp_err_to_name(ret));
         return;
     }
 
@@ -856,15 +915,13 @@ void app_main(void)
         ESP_LOGE(TAG, "esp_hidd_dev_battery_set failed: %s", esp_err_to_name(ret));
     }
 
-    // Start BLE advertising
-    ESP_LOGI(TAG, "Starting BLE advertising...");
+    // Advertising is started from ESP_HIDD_START_EVENT instead: ble_gap_adv_start()
+    // returns BLE_HS_ENOTSYNC until the NimBLE host is synced.
+    ESP_LOGI(TAG, "Initializing BLE advertising...");
     esp_hid_ble_gap_adv_init(ESP_HID_APPEARANCE_KEYBOARD, ble_hid_config.device_name);
-    ret = esp_hid_ble_gap_adv_start();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "esp_hid_ble_gap_adv_start failed: %s", esp_err_to_name(ret));
-    } else {
-        ESP_LOGI(TAG, "BLE advertising started");
-    }
+
+    ESP_LOGI(TAG, "Starting NimBLE host task...");
+    nimble_port_freertos_init(ble_hid_host_task);
 
     ESP_LOGI(TAG, "Starting interactive test task...");
     xTaskCreate(interactive_test_task, "interactive_test", 4096, NULL, configMAX_PRIORITIES - 3, NULL);

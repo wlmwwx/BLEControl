@@ -53,16 +53,25 @@ esp_err_t esp_hid_ble_gap_adv_init(uint16_t appearance, const char *device_name)
     fields.name_is_complete = 1;
 
     uuid16 = (ble_uuid16_t *)malloc(sizeof(ble_uuid16_t));
-    uuid16->value = GATT_SVR_SVC_HID_UUID;
+    if (uuid16 == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    *uuid16 = (ble_uuid16_t)BLE_UUID16_INIT(GATT_SVR_SVC_HID_UUID);
     fields.uuids16 = uuid16;
     fields.num_uuids16 = 1;
     fields.uuids16_is_complete = 1;
 
-    /* Initialize the security configuration */
-    ble_hs_cfg.sm_io_cap = BLE_SM_IO_CAP_DISP_ONLY;
+    /* Initialize the security configuration.
+     * Just Works pairing (no MITM, no Secure Connections) is the most
+     * compatible with phones: display-only + MITM + SC makes the phone
+     * expect a passkey entry/numeric comparison flow, and the pairing
+     * fails on the peer side (encryption change status=1281, then
+     * disconnect reason=531). Deliberately weak - not a security boundary.
+     */
+    ble_hs_cfg.sm_io_cap = BLE_HS_IO_NO_INPUT_OUTPUT;
     ble_hs_cfg.sm_bonding = 1;
-    ble_hs_cfg.sm_mitm = 1;
-    ble_hs_cfg.sm_sc = 1;
+    ble_hs_cfg.sm_mitm = 0;
+    ble_hs_cfg.sm_sc = 0;
     ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ID | BLE_SM_PAIR_KEY_DIST_ENC;
     ble_hs_cfg.sm_their_key_dist |= BLE_SM_PAIR_KEY_DIST_ID | BLE_SM_PAIR_KEY_DIST_ENC;
 
