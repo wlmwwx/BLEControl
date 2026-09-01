@@ -29,6 +29,7 @@
 #include "esp_hidd.h"
 #include "esp_http_server.h"
 #include "esp_hid_gap.h"
+#include "wifi_prov.h"
 
 static const char *TAG = "BLE_HID_POC";
 
@@ -349,54 +350,8 @@ static uint8_t ascii_to_keycode(unsigned char c)
     return usb_keycode_map[c];
 }
 
-// WiFi configuration
-#define WIFI_SSID     "BTControl"
-#define WIFI_PASS     "12345678"
-#define MAX_CONNECTIONS 3
-
-// WiFi event handler
-static void wifi_event_handler(void* arg, esp_event_base_t event_base,
-                               int32_t event_id, void* event_data)
-{
-    if (event_id == WIFI_EVENT_AP_STACONNECTED) {
-        ESP_LOGI(TAG, "WiFi station connected");
-    } else if (event_id == WIFI_EVENT_AP_STADISCONNECTED) {
-        ESP_LOGI(TAG, "WiFi station disconnected");
-    }
-}
-
-// Initialize WiFi AP
-static void wifi_init(void)
-{
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
-    esp_netif_create_default_wifi_ap();
-
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-
-    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
-
-    wifi_config_t wifi_config = {
-        .ap = {
-            .ssid = WIFI_SSID,
-            .ssid_len = strlen(WIFI_SSID),
-            .password = WIFI_PASS,
-            .max_connection = MAX_CONNECTIONS,
-            .authmode = WIFI_AUTH_WPA_WPA2_PSK
-        },
-    };
-
-    if (strlen(WIFI_PASS) == 0) {
-        wifi_config.ap.authmode = WIFI_AUTH_OPEN;
-    }
-
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
-    ESP_ERROR_CHECK(esp_wifi_start());
-
-    ESP_LOGI(TAG, "WiFi AP started. SSID: %s, Password: %s", WIFI_SSID, WIFI_PASS);
-}
+// WiFi is set up by wifi_prov.c: STA with saved credentials, or AP mode
+// for web provisioning when no config exists. See wifi_prov.h.
 
 // HTTP GET /status - returns connection status
 static esp_err_t status_handler(httpd_req_t *req)
@@ -686,7 +641,7 @@ static esp_err_t queue_exec_handler(httpd_req_t *req)
 static void http_server_start(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 20;   // 14 endpoints are registered below; default is 8
+    config.max_uri_handlers = 24;   // 14 HID + 4 wifi endpoints; default is 8
 
     httpd_handle_t server = NULL;
     ESP_ERROR_CHECK(httpd_start(&server, &config));
@@ -734,6 +689,8 @@ static void http_server_start(void)
 
     httpd_uri_t info_uri = { .uri = "/info", .method = HTTP_GET, .handler = info_handler };
     httpd_register_uri_handler(server, &info_uri);
+
+    wifi_prov_register_http(server);
 
     ESP_LOGI(TAG, "HTTP server started on port %d", config.server_port);
 }
@@ -843,7 +800,10 @@ void interactive_test_task(void *pvParameters)
             }
         }
         else if (strncmp(line, "status", 6) == 0) {
+            char wbuf[256];
+            wifi_prov_get_status_json(wbuf, sizeof(wbuf));
             ESP_LOGI(TAG, "BLE Connected: %s", s_ble_connected ? "YES" : "NO");
+            ESP_LOGI(TAG, "WiFi: %s", wbuf);
         }
         else {
             ESP_LOGW(TAG, "Unknown command: %s", line);
@@ -874,7 +834,7 @@ void app_main(void)
 
     // Initialize WiFi AP
     ESP_LOGI(TAG, "Initializing WiFi AP...");
-    wifi_init();
+    wifi_prov_init();
 
     // Start HTTP server
     ESP_LOGI(TAG, "Starting HTTP server...");
