@@ -155,7 +155,9 @@ A 32-entry ring buffer (`s_cmd_queue`, head/tail/count) with `queue_push`/`queue
 
 ## Python SDK
 
-`sdk/python/btcontrol.py` is a thin `requests` wrapper, default host `192.168.4.1` (the AP-mode address), matching the unprefixed endpoints above: `type`, `key`, `move`, `click`, `double_click`, `scroll`, `drag`, `press_mouse`, `release_mouse`, `queue_add`, `queue_exec`, plus consumer helpers (`volume_up`, `mute`, `play`, `next_track`, …) and composite helpers (`select_all`, `copy`, `paste`, `undo`, `save`). `tap`, `swipe`, and `move_to` exist in the SDK but have **no firmware endpoints** — they are PRD-forward and will 404. Keep SDK and firmware endpoint lists in sync when adding routes. In STA mode the device is at a DHCP IP or its mDNS name (`<hostname>.local`, e.g. `btcontrol-f632.local`) — pass that as the `host` argument.
+`sdk/python/btcontrol.py` is a thin `requests` wrapper, default host `192.168.4.1` (the AP-mode address), matching the unprefixed endpoints above: `type`, `key`, `move`, `click`, `double_click`, `scroll`, `drag`, `press_mouse`, `release_mouse`, `queue_add`, `queue_exec`, plus consumer helpers (`volume_up`, `mute`, `play`, `next_track`, …) and composite helpers (`select_all`, `copy`, `paste`, `undo`, `save`). `tap`, `swipe`, and `move_to` exist in the SDK but have **no firmware endpoints** — they are PRD-forward and will 404. Keep SDK and firmware endpoint lists in sync when adding routes. In STA mode the device is at a DHCP IP or its mDNS name (`<hostname>.local`, e.g. `btcontrol-f632.local`) — pass that as the `host` argument. `requirements.txt` pins `requests` + `mcp`; a local `.venv` (gitignored) is the norm.
+
+`btcontrol_mcp.py` is an MCP server (mcp 2.x `MCPServer` API) exposing the HTTP API as ~20 tools (`type_text`, `mouse_*`, `volume_*`, `get_status`, `get_wifi_status`, …) over stdio or SSE so AI agents can drive the device. `scroll_loop.py` is a periodic-scroll test helper.
 
 ## Where the project is headed
 

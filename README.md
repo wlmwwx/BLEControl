@@ -108,6 +108,25 @@ bt.volume_up()
   python3 sdk/python/scroll_loop.py --host 192.168.10.168
   ```
 
+## MCP 支持（AI Agent 控制）
+
+`sdk/python/btcontrol_mcp.py` 是一个 [MCP](https://modelcontextprotocol.io) server，把设备的 HTTP API 包装成 20 个工具（`type_text`、`mouse_move`、`mouse_click`、`mouse_scroll`、`volume_up`、`get_status` 等）。Claude / CodeBuddy 等 AI agent 连上后即可直接控制手机。
+
+```bash
+cd sdk/python
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+
+# stdio 传输（本地 agent 默认方式）
+.venv/bin/python btcontrol_mcp.py --host 192.168.10.168
+
+# SSE 传输（远程 agent）
+.venv/bin/python btcontrol_mcp.py --host 192.168.10.168 --transport sse --port 8000
+```
+
+在支持 MCP 的 agent（如 Claude Desktop / CodeBuddy）中把该命令配置为 MCP server 即可。
+
+
 ## UART 控制台
 
 无需 WiFi 即可直接测试 HID（串口 monitor 里输入）：
