@@ -44,10 +44,8 @@ esp_err_t esp_hid_ble_gap_adv_init(uint16_t appearance, const char *device_name)
     fields.appearance = ESP_HID_APPEARANCE_GENERIC;
     fields.appearance_is_present = 1;
 
-    /* Indicate that the TX power level field should be included */
-    fields.tx_pwr_lvl_is_present = 1;
-    fields.tx_pwr_lvl = BLE_HS_ADV_TX_PWR_LVL_AUTO;
-
+    /* Note: no TX power level field on purpose - it frees 3 bytes of the
+     * 31-byte advertisement for a longer device name. */
     fields.name = (uint8_t *)device_name;
     fields.name_len = strlen(device_name);
     fields.name_is_complete = 1;

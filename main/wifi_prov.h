@@ -31,11 +31,18 @@ bool wifi_prov_is_connected(void);
 /* Writes {"mode":..,"connected":..,"ssid":..,"ip":..} into buf */
 void wifi_prov_get_status_json(char *buf, size_t len);
 
-/* Saves ssid/password to NVS (does NOT reboot - caller reboots) */
-esp_err_t wifi_prov_set_config(const char *ssid, const char *pass);
+/* Saves ssid/password (and optional device name, may be NULL) to NVS.
+ * Does NOT reboot - caller reboots. */
+esp_err_t wifi_prov_set_config(const char *ssid, const char *pass, const char *name);
 
-/* Erases the saved WiFi config from NVS (does NOT reboot - caller reboots) */
+/* Erases the saved WiFi config from NVS (does NOT reboot - caller reboots).
+ * The device name is kept. */
 esp_err_t wifi_prov_forget(void);
+
+/* Effective device name: the saved name, or "BTControl-<last4-of-MAC>"
+ * when none is configured. Capped at WIFI_PROV_NAME_MAX. */
+#define WIFI_PROV_NAME_MAX 18
+void wifi_prov_get_device_name(char *buf, size_t len);
 
 #ifdef __cplusplus
 }

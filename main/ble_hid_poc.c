@@ -218,12 +218,17 @@ static esp_hid_raw_report_map_t ble_report_maps[] = {
     { .data = consumerReportMap, .len = sizeof(consumerReportMap) },
 };
 
+// Device name comes from wifi_prov (NVS "name" or MAC-derived default).
+// Filled in app_main before esp_hidd_dev_init(); keep short enough to fit
+// the BLE advertisement (see wifi_prov.h WIFI_PROV_NAME_MAX).
+static char s_device_name[WIFI_PROV_NAME_MAX + 1] = "BTControl-POC";
+
 // HID Device Configuration
 static esp_hid_device_config_t ble_hid_config = {
     .vendor_id      = 0x16C0,
     .product_id     = 0x05DF,
     .version        = 0x0100,
-    .device_name    = "BTControl-POC",
+    .device_name    = s_device_name,
     .manufacturer_name = "ESP32-C3",
     .serial_number  = "1234567890",
     .report_maps    = ble_report_maps,
@@ -835,6 +840,7 @@ void app_main(void)
     // Initialize WiFi AP
     ESP_LOGI(TAG, "Initializing WiFi AP...");
     wifi_prov_init();
+    wifi_prov_get_device_name(s_device_name, sizeof(s_device_name));
 
     // Start HTTP server
     ESP_LOGI(TAG, "Starting HTTP server...");

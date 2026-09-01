@@ -87,7 +87,7 @@ Three report descriptors are defined in `ble_hid_poc.c`, addressed by report ID 
 | 2 | Mouse | `mouseReportMap` (line 153) | 4 bytes: buttons, dx, dy, wheel (signed, ±127) |
 | 3 | Consumer Control | `consumerReportMap` (line 184) | 2 bytes: 16-bit usage bitmap; `send_consumer_report()` maps usage codes (0xE9…) to bit positions via `consumer_key_map` |
 
-Device identity: name `BTControl-POC`, VID `0x16C0`, PID `0x05DF`, appearance `ESP_HID_APPEARANCE_KEYBOARD`.
+Device identity: VID `0x16C0`, PID `0x05DF`, appearance `ESP_HID_APPEARANCE_KEYBOARD`. The device name is **not hardcoded**: it comes from NVS (`wifi` namespace, `name` key) or defaults to `BTControl-<last4-of-MAC>` (e.g. `BTControl-F632`), set via the provisioning page's optional "设备名称" field. Capped at `WIFI_PROV_NAME_MAX` (18) because the name must fit in the 31-byte BLE advertisement — the adv packet deliberately omits the TX-power field to leave room for it.
 
 ASCII→HID keycode conversion is a 128-entry lookup table (`usb_keycode_map`, line 304) plus `ascii_to_keycode()`; uppercase letters are handled by OR-ing in `LEFT_SHIFT` at the call site rather than in the table.
 
@@ -100,8 +100,8 @@ WiFi is managed by `wifi_prov.c`, not hardcoded in the app:
 - **STA mode** — if NVS (`wifi` namespace, `ssid`/`pass` keys) holds a saved network, the device connects to it and gets a DHCP IP.
 - **AP mode** (provisioning) — no saved config → AP with SSID `BTControl`, password `12345678`, WPA/WPA2-PSK, max 3 clients, at `192.168.4.1`.
 - **STA → AP fallback** — auth failure, 3 failed connect retries, or a 30 s connect watchdog switches to AP at runtime. The switch runs in a small `wifi_ctrl_task` (deferred via a FreeRTOS queue) — never call `esp_wifi_stop()` from inside a wifi event handler. AP → STA happens only via reboot.
-- **Provisioning** — in AP mode, `GET /` serves a self-contained HTML form; `POST /wifi/config` saves creds + `nvs_commit()` + reboots into STA; `POST /wifi/forget` erases + reboots back to AP.
-- **mDNS** — `espressif/mdns` (registry component), hostname `btcontrol`, so the device resolves as `btcontrol.local` on both AP and STA.
+- **Provisioning** — in AP mode, `GET /` serves a self-contained HTML form (WiFi SSID/password + optional device name); `POST /wifi/config` saves creds (+ name) + `nvs_commit()` + reboots into STA; `POST /wifi/forget` erases creds (the name is kept) + reboots back to AP.
+- **mDNS** — `espressif/mdns` (registry component). The hostname is the sanitized lowercase device name (e.g. `btcontrol-f632.local`; the instance name is the raw name), so it resolves on both AP and STA.
 - Both netifs (AP + STA) are created before `esp_wifi_start()`; the httpd binds `INADDR_ANY`, so the HTTP API works in both modes.
 
 `http_server_start()` (line 661) registers 14 HID URIs plus the 4 `wifi_prov` URIs on the default port (80). **`config.max_uri_handlers` is set to 24** — the esp_http_server default is 8, which would silently drop endpoints with `httpd_register_uri_handler: no slots left`. Endpoints are **unprefixed** — the `/api/v1` prefix in the PRD is not implemented:
@@ -109,7 +109,7 @@ WiFi is managed by `wifi_prov.c`, not hardcoded in the app:
 | Method | Path | Body |
 | --- | --- | --- |
 | GET | `/` | provisioning HTML page |
-| GET | `/wifi/status` | — → `{"mode":"ap\|sta","connected":bool,"ssid":str,"ip":str}` |
+| GET | `/wifi/status` | — → `{"mode":"ap\|sta","connected":bool,"ssid":str,"ip":str,"name":str}` |
 | POST | `/wifi/config` | `{"ssid":"...","password":"..."}` (or form-encoded) → save + reboot |
 | POST | `/wifi/forget` | — → erase config + reboot |
 | GET | `/status` | — → `{"connected":bool,"device_name":str}` |
@@ -155,7 +155,7 @@ A 32-entry ring buffer (`s_cmd_queue`, head/tail/count) with `queue_push`/`queue
 
 ## Python SDK
 
-`sdk/python/btcontrol.py` is a thin `requests` wrapper, default host `192.168.4.1` (the AP-mode address), matching the unprefixed endpoints above: `type`, `key`, `move`, `click`, `double_click`, `scroll`, `drag`, `press_mouse`, `release_mouse`, `queue_add`, `queue_exec`, plus consumer helpers (`volume_up`, `mute`, `play`, `next_track`, …) and composite helpers (`select_all`, `copy`, `paste`, `undo`, `save`). `tap`, `swipe`, and `move_to` exist in the SDK but have **no firmware endpoints** — they are PRD-forward and will 404. Keep SDK and firmware endpoint lists in sync when adding routes. In STA mode the device is at a DHCP IP or `btcontrol.local` — pass it as the `host` argument.
+`sdk/python/btcontrol.py` is a thin `requests` wrapper, default host `192.168.4.1` (the AP-mode address), matching the unprefixed endpoints above: `type`, `key`, `move`, `click`, `double_click`, `scroll`, `drag`, `press_mouse`, `release_mouse`, `queue_add`, `queue_exec`, plus consumer helpers (`volume_up`, `mute`, `play`, `next_track`, …) and composite helpers (`select_all`, `copy`, `paste`, `undo`, `save`). `tap`, `swipe`, and `move_to` exist in the SDK but have **no firmware endpoints** — they are PRD-forward and will 404. Keep SDK and firmware endpoint lists in sync when adding routes. In STA mode the device is at a DHCP IP or its mDNS name (`<hostname>.local`, e.g. `btcontrol-f632.local`) — pass that as the `host` argument.
 
 ## Where the project is headed
 

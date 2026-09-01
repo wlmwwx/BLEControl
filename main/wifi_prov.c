@@ -25,6 +25,7 @@
 
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_mac.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_netif.h"
@@ -40,6 +41,7 @@ static const char *TAG = "WIFI_PROV";
 #define NVS_NAMESPACE    "wifi"
 #define NVS_KEY_SSID     "ssid"
 #define NVS_KEY_PASS     "pass"
+#define NVS_KEY_NAME     "name"
 
 #define AP_SSID          "BTControl"
 #define AP_PASS          "12345678"
@@ -82,7 +84,7 @@ static bool load_wifi_config(char *ssid, size_t ssid_len, char *pass, size_t pas
     return found;
 }
 
-static void save_wifi_config(const char *ssid, const char *pass, bool save)
+static void save_wifi_config(const char *ssid, const char *pass, const char *name, bool save)
 {
     nvs_handle_t h;
     if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) {
@@ -92,12 +94,60 @@ static void save_wifi_config(const char *ssid, const char *pass, bool save)
     if (save) {
         nvs_set_str(h, NVS_KEY_SSID, ssid);
         nvs_set_str(h, NVS_KEY_PASS, pass);
+        if (name && name[0]) {
+            nvs_set_str(h, NVS_KEY_NAME, name);
+        }
     } else {
         nvs_erase_key(h, NVS_KEY_SSID);
         nvs_erase_key(h, NVS_KEY_PASS);
+        /* the device name is kept across forget + re-provision */
     }
     nvs_commit(h); /* must commit before esp_restart() */
     nvs_close(h);
+}
+
+/* Effective device name: saved NVS value, or "BTControl-<last4-of-MAC>". */
+void wifi_prov_get_device_name(char *buf, size_t len)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
+        size_t l = len;
+        if (nvs_get_str(h, NVS_KEY_NAME, buf, &l) == ESP_OK && l > 0) {
+            nvs_close(h);
+            return;
+        }
+        nvs_close(h);
+    }
+    uint8_t mac[6];
+    if (esp_read_mac(mac, ESP_MAC_BT) != ESP_OK) {
+        snprintf(buf, len, "BTControl");
+        return;
+    }
+    snprintf(buf, len, "BTControl-%02X%02X", mac[4], mac[5]);
+}
+
+/* mDNS hostname: lowercased, alphanumeric + '-', no leading/trailing '-'. */
+void wifi_prov_get_mdns_hostname(char *buf, size_t len)
+{
+    char name[WIFI_PROV_NAME_MAX + 1];
+    wifi_prov_get_device_name(name, sizeof(name));
+
+    size_t n = 0;
+    for (const char *p = name; *p && n + 1 < len; p++) {
+        char c = (char)tolower((unsigned char)*p);
+        if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+            buf[n++] = c;
+        } else if (n > 0 && buf[n - 1] != '-') {
+            buf[n++] = '-';   /* map '_', ' ', '.' to '-' */
+        }
+    }
+    while (n > 0 && buf[n - 1] == '-') {
+        n--;
+    }
+    buf[n] = '\0';
+    if (n == 0) {
+        snprintf(buf, len, "btcontrol");
+    }
 }
 
 /* ------------------------------------------------------------------------ */
@@ -120,11 +170,15 @@ static void wifi_prov_print_banner(void)
         }
         ssid = s_sta_ssid;
     }
+    char name[WIFI_PROV_NAME_MAX + 1];
+    char host[WIFI_PROV_NAME_MAX + 1];
+    wifi_prov_get_device_name(name, sizeof(name));
+    wifi_prov_get_mdns_hostname(host, sizeof(host));
     ESP_LOGI(TAG, "============================================");
-    ESP_LOGI(TAG, " BTControl-POC  [%s mode]", s_mode);
+    ESP_LOGI(TAG, " %s  [%s mode]", name, s_mode);
     ESP_LOGI(TAG, " SSID : %s", ssid);
     ESP_LOGI(TAG, " IP   : %s", ipstr);
-    ESP_LOGI(TAG, " mDNS : btcontrol.local");
+    ESP_LOGI(TAG, " mDNS : %s.local", host);
     ESP_LOGI(TAG, " HTTP : http://%s", ipstr);
     ESP_LOGI(TAG, "============================================");
 }
@@ -325,8 +379,12 @@ esp_err_t wifi_prov_init(void)
     if (mdns_init() != ESP_OK) {
         ESP_LOGW(TAG, "mdns_init failed");
     } else {
-        mdns_hostname_set("btcontrol");
-        mdns_instance_name_set("BTControl-POC");
+        char name[WIFI_PROV_NAME_MAX + 1];
+        char host[WIFI_PROV_NAME_MAX + 1];
+        wifi_prov_get_device_name(name, sizeof(name));
+        wifi_prov_get_mdns_hostname(host, sizeof(host));
+        mdns_hostname_set(host);
+        mdns_instance_name_set(name);
         mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
     }
 
@@ -363,23 +421,27 @@ void wifi_prov_get_status_json(char *buf, size_t len)
         }
     }
 
+    char name[WIFI_PROV_NAME_MAX + 1];
+    wifi_prov_get_device_name(name, sizeof(name));
+
     snprintf(buf, len,
-             "{\"mode\":\"%s\",\"connected\":%s,\"ssid\":\"%s\",\"ip\":\"%s\"}",
-             s_mode, s_sta_connected ? "true" : "false", ssid, ipstr);
+             "{\"mode\":\"%s\",\"connected\":%s,\"ssid\":\"%s\",\"ip\":\"%s\",\"name\":\"%s\"}",
+             s_mode, s_sta_connected ? "true" : "false", ssid, ipstr, name);
 }
 
-esp_err_t wifi_prov_set_config(const char *ssid, const char *pass)
+esp_err_t wifi_prov_set_config(const char *ssid, const char *pass, const char *name)
 {
-    if (!ssid || !ssid[0] || strlen(ssid) >= 32 || strlen(pass) >= 64) {
+    if (!ssid || !ssid[0] || strlen(ssid) >= 32 || strlen(pass) >= 64 ||
+        (name && strlen(name) > WIFI_PROV_NAME_MAX)) {
         return ESP_ERR_INVALID_ARG;
     }
-    save_wifi_config(ssid, pass ? pass : "", true);
+    save_wifi_config(ssid, pass ? pass : "", name, true);
     return ESP_OK;
 }
 
 esp_err_t wifi_prov_forget(void)
 {
-    save_wifi_config("", "", false);
+    save_wifi_config("", "", NULL, false);
     return ESP_OK;
 }
 
@@ -394,11 +456,14 @@ static const char WIFI_PROV_HTML[] =
     "<body style=\"font-family:sans-serif;max-width:480px;margin:40px auto;padding:0 16px\">"
     "<h2>BTControl WiFi 配网</h2>"
     "<p>输入 WiFi 名称和密码，设备保存后重启并连接该网络。</p>"
+    "<p>设备名称可自定义（最多 18 字符），用于区分多个设备；留空则自动使用 BTControl-XXXX（MAC 后 4 位）。</p>"
     "<form method=\"POST\" action=\"/wifi/config\">"
     "<label>WiFi 名称 (SSID)</label><br>"
     "<input name=\"ssid\" required style=\"width:100%;padding:8px;margin:8px 0\"><br>"
     "<label>密码 (Password)</label><br>"
     "<input type=\"password\" name=\"password\" style=\"width:100%;padding:8px;margin:8px 0\"><br>"
+    "<label>设备名称 (可选, 最多18字符)</label><br>"
+    "<input name=\"name\" maxlength=\"18\" placeholder=\"BTControl-XXXX\" style=\"width:100%;padding:8px;margin:8px 0\"><br>"
     "<button type=\"submit\" style=\"width:100%;padding:10px\">保存并连接</button>"
     "</form></body></html>";
 
@@ -466,14 +531,16 @@ static esp_err_t wifi_config_handler(httpd_req_t *req)
 
     char ssid[32] = {0};
     char pass[64] = {0};
+    char name[WIFI_PROV_NAME_MAX + 1] = {0};
     extract_field(buf, "ssid", ssid, sizeof(ssid));
     extract_field(buf, "password", pass, sizeof(pass));
+    extract_field(buf, "name", name, sizeof(name));
     if (ssid[0] == '\0') {
         ESP_LOGE(TAG, "Missing ssid in body: %s", buf);
         return httpd_resp_send_500(req);
     }
 
-    if (wifi_prov_set_config(ssid, pass) != ESP_OK) {
+    if (wifi_prov_set_config(ssid, pass, name[0] ? name : NULL) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to save wifi config");
         return httpd_resp_send_500(req);
     }
