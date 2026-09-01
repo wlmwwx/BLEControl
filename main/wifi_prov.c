@@ -449,28 +449,66 @@ esp_err_t wifi_prov_forget(void)
 /* HTTP endpoints                                                           */
 /* ------------------------------------------------------------------------ */
 
-static const char WIFI_PROV_HTML[] =
-    "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
-    "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-    "<title>BTControl WiFi 配网</title></head>"
-    "<body style=\"font-family:sans-serif;max-width:480px;margin:40px auto;padding:0 16px\">"
-    "<h2>BTControl WiFi 配网</h2>"
-    "<p>输入 WiFi 名称和密码，设备保存后重启并连接该网络。</p>"
-    "<p>设备名称可自定义（最多 18 字符），用于区分多个设备；留空则自动使用 BTControl-XXXX（MAC 后 4 位）。</p>"
-    "<form method=\"POST\" action=\"/wifi/config\">"
-    "<label>WiFi 名称 (SSID)</label><br>"
-    "<input name=\"ssid\" required style=\"width:100%;padding:8px;margin:8px 0\"><br>"
-    "<label>密码 (Password)</label><br>"
-    "<input type=\"password\" name=\"password\" style=\"width:100%;padding:8px;margin:8px 0\"><br>"
-    "<label>设备名称 (可选, 最多18字符)</label><br>"
-    "<input name=\"name\" maxlength=\"18\" placeholder=\"BTControl-XXXX\" style=\"width:100%;padding:8px;margin:8px 0\"><br>"
-    "<button type=\"submit\" style=\"width:100%;padding:10px\">保存并连接</button>"
-    "</form></body></html>";
+/* HTML-escape a string so it can be embedded in an attribute value. */
+static void html_escape(const char *in, char *out, size_t out_sz)
+{
+    size_t n = 0;
+    for (const char *p = in; *p && n + 6 < out_sz; p++) {
+        switch (*p) {
+        case '&':  memcpy(out + n, "&amp;", 5);  n += 5; break;
+        case '<':  memcpy(out + n, "&lt;", 4);   n += 4; break;
+        case '>':  memcpy(out + n, "&gt;", 4);   n += 4; break;
+        case '"':  memcpy(out + n, "&quot;", 6); n += 6; break;
+        case '\'': memcpy(out + n, "&#39;", 5);  n += 5; break;
+        default:   out[n++] = *p; break;
+        }
+    }
+    out[n] = '\0';
+}
 
 static esp_err_t root_handler(httpd_req_t *req)
 {
+    /* Pre-fill the form with the currently saved config (SSID + device
+     * name). The password is never echoed back. */
+    char ssid[33] = {0};
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
+        size_t l = sizeof(ssid);
+        nvs_get_str(h, NVS_KEY_SSID, ssid, &l);
+        nvs_close(h);
+    }
+    char name[WIFI_PROV_NAME_MAX + 1];
+    wifi_prov_get_device_name(name, sizeof(name));
+
+    char essid[64];
+    char ename[128];
+    html_escape(ssid, essid, sizeof(essid));
+    html_escape(name, ename, sizeof(ename));
+
+    char buf[1200];
+    int len = snprintf(buf, sizeof(buf),
+        "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+        "<title>BTControl WiFi 配网</title></head>"
+        "<body style=\"font-family:sans-serif;max-width:480px;margin:40px auto;padding:0 16px\">"
+        "<h2>BTControl WiFi 配网</h2>"
+        "<p>输入 WiFi 名称和密码，设备保存后重启并连接该网络。</p>"
+        "<p>设备名称可自定义（最多 18 字符），用于区分多个设备；留空则自动使用 BTControl-XXXX（MAC 后 4 位）。</p>"
+        "<form method=\"POST\" action=\"/wifi/config\">"
+        "<label>WiFi 名称 (SSID)</label><br>"
+        "<input name=\"ssid\" required value=\"%s\" style=\"width:100%%;padding:8px;margin:8px 0\"><br>"
+        "<label>密码 (Password)</label><br>"
+        "<input type=\"password\" name=\"password\" style=\"width:100%%;padding:8px;margin:8px 0\"><br>"
+        "<label>设备名称 (可选, 最多18字符)</label><br>"
+        "<input name=\"name\" maxlength=\"18\" value=\"%s\" placeholder=\"BTControl-XXXX\" style=\"width:100%%;padding:8px;margin:8px 0\"><br>"
+        "<button type=\"submit\" style=\"width:100%%;padding:10px\">保存并连接</button>"
+        "</form></body></html>",
+        essid, ename);
+    if (len < 0 || len >= (int)sizeof(buf)) {
+        return httpd_resp_send_500(req);
+    }
     httpd_resp_set_type(req, "text/html");
-    return httpd_resp_send(req, WIFI_PROV_HTML, strlen(WIFI_PROV_HTML));
+    return httpd_resp_send(req, buf, len);
 }
 
 static esp_err_t wifi_status_handler(httpd_req_t *req)
