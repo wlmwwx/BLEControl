@@ -1,5 +1,7 @@
 # BTControl — ESP32-C3 BLE HID 控制器
 
+[English](README.en.md) | [中文](README.md)
+
 让 ESP32-C3 化身蓝牙键盘/鼠标，通过 WiFi 上的 HTTP API 控制已配对的手机。电脑/控制端不需要和手机建立任何连接。
 
 ```
